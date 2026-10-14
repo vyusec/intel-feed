@@ -419,8 +419,9 @@ func (s *Store) Finish(ctx context.Context, j Job, result any, runErr error) err
 }
 func (s *Store) Reserve(ctx context.Context, kind string, amount, limit int64) (bool, error) {
 	var used int64
-	err := s.DB.QueryRowContext(ctx, `INSERT INTO budgets(day,kind,used) SELECT (now() AT TIME ZONE 'UTC')::date,$1,$2 WHERE $2<=$3
- ON CONFLICT(day,kind) DO UPDATE SET used=budgets.used+excluded.used WHERE budgets.used+excluded.used<=$3 RETURNING used`, kind, amount, limit).Scan(&used)
+	// Cast the numeric parameters before SELECT/WHERE can infer them as text.
+	err := s.DB.QueryRowContext(ctx, `INSERT INTO budgets(day,kind,used) SELECT (now() AT TIME ZONE 'UTC')::date,$1,$2::bigint WHERE $2::bigint<=$3::bigint
+ ON CONFLICT(day,kind) DO UPDATE SET used=budgets.used+excluded.used WHERE budgets.used+excluded.used<=$3::bigint RETURNING used`, kind, amount, limit).Scan(&used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
