@@ -1,0 +1,107 @@
+openapi: 3.1.0
+info:
+  title: Zoli Intel Feed API
+  version: 1.0.0
+  description: Published package threat intelligence. A missing finding never means safe.
+paths:
+  /v1/query:
+    post:
+      operationId: queryPackage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Identity'}
+      responses:
+        '200':
+          description: Findings, match certainty, coverage and freshness.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/QueryResponse'}
+        '400': {description: Invalid identity or JSON.}
+        '401': {description: API key required when configured.}
+        '429': {description: Rate limit exceeded.}
+        '503': {description: No committed feed is available.}
+  /v1/querybatch:
+    post:
+      operationId: queryPackages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [packages]
+              additionalProperties: false
+              properties:
+                packages:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: {$ref: '#/components/schemas/Identity'}
+      responses:
+        '200':
+          description: Results in the same order as input, from one publication.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items: {$ref: '#/components/schemas/QueryResponse'}
+        '400': {description: Invalid request or batch size.}
+        '401': {description: API key required when configured.}
+        '429': {description: Rate limit exceeded.}
+        '503': {description: Feed unavailable.}
+  /v1/status:
+    get:
+      operationId: feedStatus
+      responses:
+        '200': {description: Sequence, source checkpoints, freshness, gaps and coverage.}
+        '503': {description: Status unavailable.}
+  /feed/latest.json:
+    get:
+      operationId: signedManifest
+      responses:
+        '200': {description: Ed25519 signed manifest envelope; verify with Zoli's pinned key.}
+        '503': {description: No committed feed is available.}
+components:
+  securitySchemes:
+    lookupKey:
+      type: http
+      scheme: bearer
+      description: Optional deployment-specific lookup key. Public feed downloads do not require it.
+  schemas:
+    Identity:
+      type: object
+      additionalProperties: false
+      required: [ecosystem, name]
+      properties:
+        ecosystem: {type: string, enum: [PyPI, npm, Cargo, Maven, Conda, pip, pnpm, Poetry, Pipenv]}
+        name: {type: string, minLength: 1, maxLength: 214}
+        version: {type: string, maxLength: 200}
+        registry: {type: string, format: uri}
+        sha256: {type: string, pattern: '^[a-fA-F0-9]{64}$'}
+        channel: {type: string}
+        subdir: {type: string}
+        build: {type: string}
+    QueryResponse:
+      type: object
+      required: [status, matches, sequence, generated_at, coverage, freshness]
+      properties:
+        status: {type: string, enum: [known_match, no_known_match, insufficient_information]}
+        sequence: {type: integer, minimum: 1}
+        generated_at: {type: string, format: date-time}
+        freshness: {type: string, enum: [current, stale, degraded]}
+        coverage: {type: object}
+        matches:
+          type: array
+          items:
+            type: object
+            required: [record, certainty]
+            properties:
+              record: {$ref: '../schemas/record.schema.json'}
+              certainty: {type: string, enum: [exact, range, uncertain]}
+              reasons: {type: array, items: {type: string}}

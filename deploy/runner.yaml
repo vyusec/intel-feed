@@ -1,0 +1,19 @@
+# Lives on a separate sandbox host; no database credentials or signing key.
+storage_dir: data/runner
+runner_token_env: ZOLI_RUNNER_TOKEN
+analysis:
+  enabled: true
+  runtime_enabled: true
+  sandbox_runtime: runsc
+  sandbox_trace_dir: /var/log/zoli-runsc
+  sandbox_images:
+    # Replace with your build's OCI digest or local sha256 image ID.
+    npm: ""
+    pypi: ""
+  runtime_timeout: 5m
+  daily_bytes: 1073741824
+  daily_runtime_jobs: 100
+  runtime_concurrency: 1
+  max_artifact_bytes: 20971520
+  max_expanded_bytes: 104857600
+  max_files: 10000

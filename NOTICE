@@ -1,0 +1,17 @@
+Zoli Intel Feed
+Copyright 2026 Zoli contributors
+
+third_party/semver is an unmodified source subset of google/deps.dev,
+revision 7bac2db56a63e32030d96651767a6d77d8b8324b, licensed Apache-2.0.
+https://github.com/google/deps.dev
+
+third_party/package-feeds is a source subset of ossf/package-feeds,
+revision 939890176fa6d60cd34ec87947901244e80e6583, licensed Apache-2.0.
+Only npm/PyPI release feeds and their supporting packages are included.
+Its module manifest is reduced to the dependencies of that subset.
+Additional transport hardening is identified in modified source files.
+The npm parser also rejects malformed timestamp types instead of panicking.
+https://github.com/ossf/package-feeds
+
+Imported intelligence retains each source's license. Original Zoli records
+are CC-BY-4.0; this does not relicense imported descriptions or evidence.

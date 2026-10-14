@@ -1,0 +1,23 @@
+name: Trigger report ingestion
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: report-ingestion
+  cancel-in-progress: false
+jobs:
+  trigger:
+    if: vars.ZOLI_FEED_URL != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the server scheduler
+        env:
+          ZOLI_FEED_URL: ${{ vars.ZOLI_FEED_URL }}
+          ZOLI_OPERATOR_TOKEN: ${{ secrets.ZOLI_OPERATOR_TOKEN }}
+        run: |
+          curl --fail --silent --show-error --max-time 30 \
+            --proto '=https' \
+            -H "Authorization: Bearer $ZOLI_OPERATOR_TOKEN" \
+            -X POST "$ZOLI_FEED_URL/admin/ingest"

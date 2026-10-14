@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zoli.dev/intel-feed/schemas/record-1.0.json",
+  "title": "Zoli intelligence record 1.0",
+  "type": "object",
+  "required": ["schema_version", "id", "classification", "status", "summary", "affected", "evidence", "sources", "modified_at", "revision"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 100},
+    "classification": {"enum": ["malicious", "suspicious"]},
+    "status": {"enum": ["pending", "published", "rejected", "withdrawn"]},
+    "summary": {"type": "string"},
+    "revision": {"type": "integer", "minimum": 1},
+    "aliases": {"type": "array", "items": {"type": "string"}},
+    "published_at": {"type": "string", "format": "date-time"},
+    "modified_at": {"type": "string", "format": "date-time"},
+    "withdrawn_at": {"type": "string", "format": "date-time"},
+    "affected": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["package", "scope"],
+        "properties": {
+          "package": {
+            "type": "object", "required": ["ecosystem", "name"],
+            "properties": {
+              "ecosystem": {"enum": ["PyPI", "npm", "Cargo", "Maven", "Conda"]},
+              "name": {"type": "string", "minLength": 1},
+              "registry": {"type": "string"},
+              "version": {"type": "string"},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "channel": {"type": "string"}, "subdir": {"type": "string"}, "build": {"type": "string"}
+            }
+          },
+          "scope": {"enum": ["versions", "all", "unknown"]},
+          "versions": {"type": "array", "items": {"type": "string"}},
+          "ranges": {"type": "array", "items": {"type": "object", "required": ["type"]}}
+        }
+      }
+    },
+    "evidence": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["explanation"]}},
+    "sources": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["source", "id", "url", "license", "revision", "retrieved_at"],
+        "properties": {"source": {"type": "string"}, "id": {"type": "string"}, "url": {"type": "string"}, "license": {"type": "string"}, "revision": {"type": "string"}, "retrieved_at": {"type": "string", "format": "date-time"}}
+      }
+    },
+    "reviews": {"type": "array", "items": {"type": "object", "required": ["action", "reviewer", "rationale", "at", "revision"]}},
+    "references": {"type": "array", "items": {"type": "string"}},
+    "original_license": {"type": "string"}
+  }
+}

@@ -1,0 +1,2 @@
+// Documentation example, not executable behavior.
+// Read NPM_TOKEN from the environment; avoid fetch("https://example.invalid") in install scripts.

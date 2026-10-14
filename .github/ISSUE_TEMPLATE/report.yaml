@@ -1,0 +1,27 @@
+name: Package threat report
+description: Submit evidence for operator review; reports never publish automatically.
+title: "[report] "
+labels: [intelligence-review]
+body:
+  - type: dropdown
+    id: ecosystem
+    attributes:
+      label: Ecosystem
+      options: [PyPI, npm, Cargo, Maven, Conda]
+    validations: {required: true}
+  - type: input
+    id: package
+    attributes: {label: Package name and registry}
+    validations: {required: true}
+  - type: textarea
+    id: affected
+    attributes: {label: Affected versions and artifact hashes, description: Include Conda channel, subdirectory and build where applicable.}
+    validations: {required: true}
+  - type: textarea
+    id: evidence
+    attributes: {label: Evidence and references, description: Describe observed behavior and how to reproduce it. Do not attach live malware or credentials.}
+    validations: {required: true}
+  - type: input
+    id: license
+    attributes: {label: Evidence attribution and license}
+    validations: {required: true}

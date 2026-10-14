@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: zoli
+      POSTGRES_DB: zoli
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U zoli -d zoli]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+  feed:
+    build: .
+    env_file: .env
+    ports: ["127.0.0.1:8080:8080"]
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./rules:/app/rules:ro
+      - feeddata:/app/data
+      - ./secrets:/app/secrets:ro
+    depends_on:
+      db: {condition: service_healthy}
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  worker:
+    build: .
+    command: [worker, --config, /app/config.yaml]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./rules:/app/rules:ro
+      - feeddata:/app/data
+    depends_on:
+      db: {condition: service_healthy}
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+volumes:
+  pgdata:
+  feeddata:

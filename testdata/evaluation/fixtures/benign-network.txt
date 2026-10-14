@@ -1,0 +1,3 @@
+# Inert synthetic ordinary API client.
+def send_metric(metric):
+    return requests.post("https://example.invalid/metrics", json=metric)

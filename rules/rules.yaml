@@ -1,0 +1,26 @@
+version: "1.0.0"
+rules:
+  - id: ZOLI-STATIC-001
+    version: "1.0.0"
+    explanation: Credential-path references and network submission appear in the same source file.
+    ecosystems: [npm, PyPI]
+    file_pattern: '\.(js|cjs|mjs|ts|py)$'
+    all:
+      - '(?i)(\.aws[/\\]credentials|\.ssh[/\\]id_rsa|AWS_SECRET_ACCESS_KEY|NPM_TOKEN)'
+      - '(?i)(https?\.request|fetch\s*\(|requests\.post|urlopen\s*\(|axios\.post)'
+  - id: ZOLI-STATIC-002
+    version: "1.0.0"
+    explanation: A file combines a remote code download with shell or process execution.
+    ecosystems: [npm, PyPI]
+    file_pattern: '(\.(js|cjs|mjs|ts|py|sh)$|package\.json$)'
+    all:
+      - '(?i)(curl\s+https?://|wget\s+https?://|https?\.get|requests\.get|urlopen\s*\()'
+      - '(?i)(execSync|child_process|subprocess\.|os\.system|\|\s*(sh|bash))'
+  - id: ZOLI-STATIC-003
+    version: "1.0.0"
+    explanation: Encoded content and dynamic execution appear in the same file.
+    ecosystems: [npm, PyPI]
+    file_pattern: '\.(js|cjs|mjs|ts|py)$'
+    all:
+      - '(?i)(base64\.b64decode|atob\s*\(|Buffer\.from\([^\n]*base64)'
+      - '(?i)(eval\s*\(|exec\s*\(|new\s+Function\s*\()'

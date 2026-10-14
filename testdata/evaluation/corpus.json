@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "synthetic": true,
+  "cases": [
+    {"id":"heldout-npm-exfil","ecosystem":"npm","label":"malicious","files":[{"name":"lib/publish.js","path":"fixtures/npm-exfil.txt"}]},
+    {"id":"heldout-python-loader","ecosystem":"PyPI","label":"malicious","files":[{"name":"setup.py","path":"fixtures/python-loader.txt"}]},
+    {"id":"heldout-python-encoded","ecosystem":"PyPI","label":"malicious","files":[{"name":"module.py","path":"fixtures/python-encoded.txt"}]},
+    {"id":"benign-token-access","ecosystem":"npm","label":"benign","files":[{"name":"index.js","path":"fixtures/benign-token.txt"}]},
+    {"id":"benign-network","ecosystem":"PyPI","label":"benign","files":[{"name":"client.py","path":"fixtures/benign-network.txt"}]},
+    {"id":"benign-docs-lookalike","ecosystem":"npm","label":"benign","files":[{"name":"example.js","path":"fixtures/benign-docs.txt"}]}
+  ]
+}

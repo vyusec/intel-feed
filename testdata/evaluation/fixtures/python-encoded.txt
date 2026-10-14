@@ -1,0 +1,3 @@
+# Inert synthetic text fixture. Never execute.
+decoded = base64.b64decode("SYNTHETIC_NOT_A_PAYLOAD")
+exec(decoded)

@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "id": "ZOLI-controlled-example",
+  "classification": "suspicious",
+  "status": "pending",
+  "summary": "Controlled example for exercising the review workflow",
+  "affected": [{"package":{"ecosystem":"npm","name":"zoli-controlled-example","registry":"https://registry.npmjs.org"},"scope":"versions","versions":["1.0.0"]}],
+  "evidence": [{"explanation":"Synthetic example only. This is not a report about a real package.","limitations":["Do not publish this example to a production feed"]}],
+  "sources": [{"source":"zoli","id":"controlled-example","url":"https://example.invalid","license":"CC-BY-4.0","revision":"example-v1","retrieved_at":"2026-10-14T00:00:00Z"}],
+  "modified_at": "2026-10-14T00:00:00Z",
+  "revision": 1,
+  "original_license": "CC-BY-4.0"
+}

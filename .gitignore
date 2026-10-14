@@ -1,0 +1,6 @@
+/bin/
+/data/
+/secrets/
+/.env
+/coverage.out
+*.log
