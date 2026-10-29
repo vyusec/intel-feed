@@ -4,11 +4,24 @@ package ingest
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 	"zoli.dev/intel-feed/internal/config"
 	"zoli.dev/intel-feed/internal/model"
 )
+
+// Unsupported identities are a coverage limitation, not a failed source fetch.
+// Keep these distinct from malformed reports so ingestion cannot hide errors.
+var ErrUnsupportedReport = errors.New("no package identities supported by this feed")
+
+type unsupportedReport struct{ id string }
+
+func (e *unsupportedReport) Error() string {
+	return fmt.Sprintf("Skipped %.100s: %s", e.id, ErrUnsupportedReport)
+}
+
+func (e *unsupportedReport) Unwrap() error { return ErrUnsupportedReport }
 
 type OSV struct {
 	ID        string     `json:"id"`
@@ -37,8 +50,14 @@ func ParseOSV(b []byte, s config.Source) (model.Record, bool, error) {
 	if err := json.Unmarshal(b, &o); err != nil {
 		return r, false, err
 	}
+	if o.ID == "" {
+		return r, false, errors.New("OSV report lacks id")
+	}
 	if !strings.HasPrefix(o.ID, "MAL-") {
 		return r, false, nil
+	}
+	if len(o.Affected) == 0 && o.Withdrawn == nil {
+		return r, false, errors.New("malware report lacks affected packages")
 	}
 	r = model.Record{SchemaVersion: model.Schema, ID: model.StableID(s.Name, o.ID), Aliases: append([]string{o.ID}, o.Aliases...), Classification: "malicious", Summary: o.Summary, PublishedAt: o.Published, WithdrawnAt: o.Withdrawn}
 	for _, a := range o.Affected {
@@ -78,8 +97,8 @@ func ParseOSV(b []byte, s config.Source) (model.Record, bool, error) {
 	if ambiguous || !clear {
 		r.Classification = "suspicious"
 	}
-	if len(r.Affected) == 0 {
-		return r, false, errors.New("malware report contains no supported packages")
+	if len(r.Affected) == 0 && o.Withdrawn == nil {
+		return model.Record{}, false, &unsupportedReport{id: o.ID}
 	}
 	return r, s.Trusted && clear && !ambiguous, nil
 }
@@ -113,8 +132,17 @@ func ParseGitHub(b []byte, s config.Source) (model.Record, bool, error) {
 	if err := json.Unmarshal(b, &o); err != nil {
 		return r, false, err
 	}
+	if o.Type == "" {
+		return r, false, errors.New("advisory lacks type")
+	}
 	if o.Type != "malware" {
 		return r, false, nil
+	}
+	if o.ID == "" {
+		return r, false, errors.New("malware advisory lacks ghsa_id")
+	}
+	if len(o.Vulnerabilities) == 0 && o.Withdrawn == nil {
+		return r, false, errors.New("malware advisory lacks affected packages")
 	}
 	r = model.Record{SchemaVersion: model.Schema, ID: model.StableID(s.Name, o.ID), Aliases: []string{o.ID}, Classification: "malicious", Summary: o.Summary, PublishedAt: o.Published, WithdrawnAt: o.Withdrawn, References: o.References}
 	if o.URL == "" {
@@ -141,8 +169,8 @@ func ParseGitHub(b []byte, s config.Source) (model.Record, bool, error) {
 	}
 	r.Sources = []model.Provenance{{Source: s.Name, ID: o.ID, URL: o.URL, License: s.License, Revision: model.Hash(b), RetrievedAt: time.Now().UTC()}}
 	r.Evidence = []model.Evidence{{Explanation: "GitHub explicitly classifies this advisory as malware", Limitations: []string{"Zoli has not independently reproduced this upstream detection"}}}
-	if len(r.Affected) == 0 {
-		return r, false, nil
+	if len(r.Affected) == 0 && o.Withdrawn == nil {
+		return model.Record{}, false, &unsupportedReport{id: o.ID}
 	}
 	return r, s.Trusted, nil
 }

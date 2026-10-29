@@ -1,9 +1,24 @@
 package ingest
 
 import (
+	"errors"
 	"testing"
 	"zoli.dev/intel-feed/internal/config"
 )
+
+func TestMalformedSourceRecordsAreNotCoverageSkips(t *testing.T) {
+	s := config.Source{Name: "fixture", License: "Apache-2.0", Trusted: true}
+	for _, body := range []string{`{}`, `{"summary":"Malicious package"}`, `{"id":"MAL-2026-incomplete"}`} {
+		if _, _, err := ParseOSV([]byte(body), s); err == nil || errors.Is(err, ErrUnsupportedReport) {
+			t.Fatalf("malformed OSV record hidden: %s: %v", body, err)
+		}
+	}
+	for _, body := range []string{`{}`, `{"type":"malware"}`, `{"type":"malware","ghsa_id":"GHSA-incomplete"}`} {
+		if _, _, err := ParseGitHub([]byte(body), s); err == nil || errors.Is(err, ErrUnsupportedReport) {
+			t.Fatalf("malformed advisory hidden: %s: %v", body, err)
+		}
+	}
+}
 
 func TestOrdinaryVulnerabilitiesExcluded(t *testing.T) {
 	s := config.Source{Name: "source", License: "Apache-2.0", Trusted: true}

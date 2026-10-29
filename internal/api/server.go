@@ -231,6 +231,11 @@ func BuildIndex(records []model.Record) map[string][]model.Record {
 	return index
 }
 func Query(q model.Identity, m feed.Manifest, records []model.Record) (QueryResponse, error) {
+	return QueryAt(q, m, records, time.Now().UTC())
+}
+
+// QueryAt evaluates every freshness boundary against the same clock instant.
+func QueryAt(q model.Identity, m feed.Manifest, records []model.Record, now time.Time) (QueryResponse, error) {
 	out := QueryResponse{Status: "no_known_match", Sequence: m.Sequence, GeneratedAt: m.GeneratedAt, Matches: []model.Match{}, Freshness: "current"}
 	if err := q.Normalize(); err != nil {
 		return out, err
@@ -240,11 +245,14 @@ func Query(q model.Identity, m feed.Manifest, records []model.Record) (QueryResp
 			out.Coverage = c
 		}
 	}
-	if time.Since(m.GeneratedAt) > time.Hour {
+	if now.Sub(m.GeneratedAt) > time.Hour {
 		out.Freshness = "stale"
 	}
+	if m.GeneratedAt.After(now.Add(5*time.Minute)) || len(m.Sources) == 0 {
+		out.Freshness = "degraded"
+	}
 	for _, s := range m.Sources {
-		if s.LastSuccess == nil || time.Since(*s.LastSuccess) > time.Hour || s.Error != "" {
+		if s.LastSuccess == nil || now.Sub(*s.LastSuccess) > time.Hour || s.LastSuccess.After(now.Add(5*time.Minute)) || s.Error != "" {
 			out.Freshness = "degraded"
 		}
 	}
@@ -376,12 +384,37 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "status unavailable")
 		return
 	}
-	seq, _, _, err := s.Store.Publication(r.Context())
+	seq, envelope, _, err := s.Store.Publication(r.Context())
 	if err != nil {
 		writeError(w, 503, "status unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"sequence": seq, "sources": sources, "coverage": model.DefaultCoverage()})
+	coverage, err := statusCoverage(s.Config.Analysis.Enabled, seq, envelope)
+	if err != nil {
+		writeError(w, 503, "published manifest unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"sequence": seq, "sources": sources, "coverage": coverage})
+}
+
+func statusCoverage(analysisEnabled bool, sequence int64, envelope []byte) ([]model.Coverage, error) {
+	coverage := model.DefaultCoverage()
+	if sequence != 0 {
+		var env feed.Envelope
+		var manifest feed.Manifest
+		if err := json.Unmarshal(envelope, &env); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(env.Manifest, &manifest); err != nil {
+			return nil, err
+		}
+		coverage = manifest.Coverage
+	} else if !analysisEnabled {
+		for i := range coverage {
+			coverage[i].Mode = "reports_only"
+		}
+	}
+	return coverage, nil
 }
 func (s *Server) reports(w http.ResponseWriter, r *http.Request) {
 	records, err := s.Store.Records(r.Context(), false)

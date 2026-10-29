@@ -73,6 +73,11 @@ func New(ctx context.Context, c config.Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.Analysis.Enabled {
+		if err = d.Initialize(ctx); err != nil {
+			return nil, err
+		}
+	}
 	coverage := model.DefaultCoverage()
 	for i := range coverage {
 		if !c.Analysis.Enabled {
@@ -146,28 +151,54 @@ func (s *Service) Run(ctx context.Context) error {
 	return err
 }
 func (s *Service) importLoop(ctx context.Context) {
-	timer := time.NewTicker(s.Config.IngestInterval)
-	defer timer.Stop()
-	daily := time.NewTicker(24 * time.Hour)
-	defer daily.Stop()
-	run := func(reconcile bool) {
-		for _, source := range s.Config.Sources {
-			if err := s.Ingest.RunSource(ctx, source, reconcile); err != nil && !errors.Is(err, store.ErrLocked) {
-				slog.Error("source ingestion failed", "source", source.Name, "error", err)
-			}
+	sourceLoops(ctx, s.Config.Sources, s.Config.IngestInterval, s.trigger, func(source config.Source, reconcile bool) {
+		if err := s.Ingest.RunSource(ctx, source, reconcile); err != nil && !errors.Is(err, store.ErrLocked) {
+			slog.Error("source ingestion failed", "source", source.Name, "error", err)
 		}
+	})
+}
+
+// A long bootstrap or reconciliation must not stop other sources refreshing.
+func sourceLoops(ctx context.Context, sources []config.Source, interval time.Duration, trigger <-chan struct{}, run func(config.Source, bool)) {
+	var wg sync.WaitGroup
+	requests := make([]chan struct{}, len(sources))
+	for i, source := range sources {
+		requests[i] = make(chan struct{}, 1)
+		request := requests[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			timer := time.NewTicker(interval)
+			defer timer.Stop()
+			daily := time.NewTicker(24 * time.Hour)
+			defer daily.Stop()
+			run(source, false)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-timer.C:
+					run(source, false)
+				case <-request:
+					run(source, false)
+				case <-daily.C:
+					run(source, true)
+				}
+			}
+		}()
 	}
-	run(false)
+	defer wg.Wait()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
-			run(false)
-		case <-s.trigger:
-			run(false)
-		case <-daily.C:
-			run(true)
+		case <-trigger:
+			for _, request := range requests {
+				select {
+				case request <- struct{}{}:
+				default:
+				}
+			}
 		}
 	}
 }

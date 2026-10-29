@@ -1,0 +1,9 @@
+# Run with: docker compose -f compose.yaml -f deploy/continuous.compose.yaml up --build -d db feed worker
+# Paths are relative to the first Compose file (the project root).
+services:
+  feed:
+    volumes:
+      - ./deploy/continuous.yaml:/app/config.yaml:ro
+  worker:
+    volumes:
+      - ./deploy/continuous.yaml:/app/config.yaml:ro

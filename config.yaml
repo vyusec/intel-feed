@@ -7,9 +7,9 @@ storage_dir: data/private
 feed_dir: data/feed
 signing_key: secrets/feed.key
 rules_file: rules/rules.yaml
-ingest_interval: 30m
-discovery_interval: 10m
-publish_interval: 5m
+ingest_interval: 15m
+discovery_interval: 1m
+publish_interval: 1m
 
 sources:
   - name: openssf-via-osv

@@ -1,0 +1,11 @@
+[Unit]
+Description=Update the verified Zoli intelligence cache
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Documents/intel-feed
+Environment=ZOLI_HOME=%h/Documents/intel-feed/data/zoli-client
+ExecStart=%h/Documents/Zoli/target/debug/zoli update
+TimeoutStartSec=15min

@@ -57,7 +57,7 @@ type API struct {
 func Default() Config {
 	return Config{
 		Listen: "127.0.0.1:8080", DatabaseEnv: "DATABASE_URL", OperatorTokenEnv: "ZOLI_OPERATOR_TOKEN", RunnerTokenEnv: "ZOLI_RUNNER_TOKEN", GitHubTokenEnv: "GITHUB_TOKEN",
-		StorageDir: "data/private", FeedDir: "data/feed", SigningKey: "secrets/feed.key", RulesFile: "rules/rules.yaml", IngestInterval: 30 * time.Minute, DiscoveryInterval: 10 * time.Minute, PublishInterval: 5 * time.Minute,
+		StorageDir: "data/private", FeedDir: "data/feed", SigningKey: "secrets/feed.key", RulesFile: "rules/rules.yaml", IngestInterval: 15 * time.Minute, DiscoveryInterval: time.Minute, PublishInterval: time.Minute,
 		Analysis: Analysis{DailyBytes: 1 << 30, DailyRuntimeJobs: 100, RuntimeConcurrency: 1, MaxArtifactBytes: 20 << 20, MaxExpandedBytes: 100 << 20, MaxFiles: 10000, SandboxRuntime: "runsc", SandboxTraceDir: "/var/log/zoli-runsc", RuntimeTimeout: 5 * time.Minute},
 		API:      API{RequestsPerMinute: 60, KeysEnv: "ZOLI_API_KEYS"},
 	}

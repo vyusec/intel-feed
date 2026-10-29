@@ -8,12 +8,17 @@ import (
 	"compress/gzip"
 	"errors"
 	"io"
+	"math"
 	"path"
 	"strings"
+	"unicode"
 	"zoli.dev/intel-feed/internal/config"
 )
 
 func Inspect(b []byte, limits config.Analysis) ([]File, error) {
+	if limits.MaxArtifactBytes <= 0 || limits.MaxExpandedBytes <= 0 || limits.MaxFiles <= 0 || int64(limits.MaxFiles) > (math.MaxInt64-limits.MaxExpandedBytes-1)/1024 {
+		return nil, errors.New("invalid archive limits")
+	}
 	if int64(len(b)) > limits.MaxArtifactBytes {
 		return nil, errors.New("artifact exceeds size limit")
 	}
@@ -52,6 +57,11 @@ func Inspect(b []byte, limits config.Analysis) ([]File, error) {
 				return nil, errors.New("unsafe archive path")
 			}
 			if f.FileInfo().IsDir() {
+				name := strings.TrimSuffix(f.Name, "/")
+				if seen[name] {
+					return nil, errors.New("duplicate archive path")
+				}
+				seen[name] = true
 				continue
 			}
 			if !f.Mode().IsRegular() {
@@ -67,6 +77,9 @@ func Inspect(b []byte, limits config.Analysis) ([]File, error) {
 				return nil, err
 			}
 		}
+		if len(files) == 0 {
+			return nil, errors.New("archive contains no inspectable files")
+		}
 		return files, nil
 	}
 	var r io.Reader = bytes.NewReader(b)
@@ -79,8 +92,8 @@ func Inspect(b []byte, limits config.Analysis) ([]File, error) {
 		r = gz
 	}
 	// Limit archive framing and directory entries as well as regular file content.
-	r = io.LimitReader(r, limits.MaxExpandedBytes+int64(limits.MaxFiles)*1024+1)
-	tr := tar.NewReader(r)
+	bounded := &io.LimitedReader{R: r, N: limits.MaxExpandedBytes + int64(limits.MaxFiles)*1024 + 1}
+	tr := tar.NewReader(bounded)
 	entries := 0
 	for {
 		h, err := tr.Next()
@@ -100,6 +113,10 @@ func Inspect(b []byte, limits config.Analysis) ([]File, error) {
 		}
 		switch h.Typeflag {
 		case tar.TypeDir:
+			if seen[name] {
+				return nil, errors.New("duplicate archive path")
+			}
+			seen[name] = true
 			continue
 		case tar.TypeReg, tar.TypeRegA:
 			if err = add(name, h.Size, tr); err != nil {
@@ -109,11 +126,31 @@ func Inspect(b []byte, limits config.Analysis) ([]File, error) {
 			return nil, errors.New("archive links and special files are forbidden")
 		}
 	}
+	// tar stops at its end markers before gzip necessarily checks its trailer.
+	// Consume bounded padding to verify CRC/truncation and reject hidden archives.
+	var padding [32 << 10]byte
+	for {
+		n, err := bounded.Read(padding[:])
+		for _, b := range padding[:n] {
+			if b != 0 {
+				return nil, errors.New("non-padding data after tar archive")
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if bounded.N == 0 {
+		return nil, errors.New("archive framing limit")
+	}
 	if len(files) == 0 {
 		return nil, errors.New("archive contains no inspectable files")
 	}
 	return files, nil
 }
 func safeName(s string) bool {
-	return s != "" && s != "." && !strings.HasPrefix(s, "/") && !strings.Contains(s, "\\") && !strings.Contains(s, ":") && path.Clean(s) == s && !strings.HasPrefix(s, "../") && len(s) < 1024
+	return s != "" && s != "." && s != ".." && !strings.HasPrefix(s, "/") && !strings.Contains(s, "\\") && !strings.Contains(s, ":") && strings.IndexFunc(s, unicode.IsControl) < 0 && path.Clean(s) == s && !strings.HasPrefix(s, "../") && len(s) < 1024
 }

@@ -104,6 +104,9 @@ func (c *Client) Update(ctx context.Context, previous *Snapshot) (Snapshot, erro
 		return out, errors.New("feed rollback rejected")
 	}
 	if m.Sequence == last && previous != nil {
+		if !bytes.Equal(out.Envelope.Manifest, previous.Envelope.Manifest) {
+			return out, errors.New("same-sequence manifest equivocation rejected")
+		}
 		return *previous, nil
 	}
 	fetch := func(a feed.Artifact) ([]byte, error) {

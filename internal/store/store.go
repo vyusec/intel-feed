@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lib/pq"
+	"sort"
 	"time"
 	"zoli.dev/intel-feed/internal/model"
 )
@@ -59,29 +60,50 @@ func (s *Store) Lock(ctx context.Context, key string, fn func() error) error {
 	return fn()
 }
 func (s *Store) Ingest(ctx context.Context, r model.Record, auto bool) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = ingest(ctx, tx, r, auto); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ingest also supports atomic, lease-fenced analysis completion.
+func ingest(ctx context.Context, tx *sql.Tx, r model.Record, auto bool) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
 	if len(r.Sources) == 0 {
 		return errors.New("source required")
 	}
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "report:"+r.ID); err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "report:"+r.ID); err != nil {
-		return err
+	// Independent sources can import related reports concurrently. Serialize
+	// shared-alias decisions so conflicting claims cannot both auto-publish
+	// after each transaction inspected a snapshot missing the other's insert.
+	aliases := append([]string(nil), r.Aliases...)
+	sort.Strings(aliases)
+	for i, alias := range aliases {
+		if i > 0 && alias == aliases[i-1] {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "alias:"+alias); err != nil {
+			return err
+		}
 	}
 	var data []byte
 	var oldHash string
-	err = tx.QueryRowContext(ctx, "SELECT record,content_hash FROM reports WHERE id=$1 FOR UPDATE", r.ID).Scan(&data, &oldHash)
+	err := tx.QueryRowContext(ctx, "SELECT record,content_hash FROM reports WHERE id=$1 FOR UPDATE", r.ID).Scan(&data, &oldHash)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	hash := r.ContentHash()
 	if err == nil && hash == oldHash {
-		return tx.Commit()
+		return nil
 	}
 	// Shared aliases link reports, but conflicting scopes/verdicts need review.
 	if auto && len(r.Aliases) > 0 {
@@ -162,7 +184,7 @@ func (s *Store) Ingest(ctx context.Context, r model.Record, auto bool) error {
 			}
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 func saveRevision(ctx context.Context, tx *sql.Tx, r model.Record) error {
 	b, err := json.Marshal(r)
@@ -398,6 +420,12 @@ func (s *Store) Finish(ctx context.Context, j Job, result any, runErr error) err
 	}
 	status := "done"
 	detail := ""
+	var outcome struct {
+		Status string `json:"status"`
+	}
+	if runErr == nil && json.Unmarshal(b, &outcome) == nil && outcome.Status == "skipped" {
+		status = "skipped"
+	}
 	if runErr != nil {
 		status = "queued"
 		if j.Attempts >= 5 {
@@ -451,6 +479,28 @@ func (s *Store) Publication(ctx context.Context) (int64, []byte, []model.Record,
 	var records []model.Record
 	err = json.Unmarshal(b, &records)
 	return seq, m, records, err
+}
+
+// PublicationInputs reads records and their source freshness from one PostgreSQL
+// statement snapshot. Separate reads could label old records with a newly
+// completed import's freshness while an ingestion cycle is committing.
+func (s *Store) PublicationInputs(ctx context.Context) ([]model.Record, []model.SourceState, error) {
+	var rb, sb []byte
+	err := s.DB.QueryRowContext(ctx, `SELECT
+ coalesce((SELECT jsonb_agg(record ORDER BY id) FROM public_records),'[]'::jsonb),
+ coalesce((SELECT jsonb_agg(state ORDER BY name) FROM source_state),'[]'::jsonb)`).Scan(&rb, &sb)
+	if err != nil {
+		return nil, nil, err
+	}
+	var records []model.Record
+	var sources []model.SourceState
+	if err = json.Unmarshal(rb, &records); err != nil {
+		return nil, nil, err
+	}
+	if err = json.Unmarshal(sb, &sources); err != nil {
+		return nil, nil, err
+	}
+	return records, sources, nil
 }
 func (s *Store) NextSequence(ctx context.Context) (int64, error) {
 	var seq int64

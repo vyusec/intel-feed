@@ -70,13 +70,12 @@ func (w *Worker) RunOne(ctx context.Context) (bool, error) {
 	if err != nil {
 		return true, w.Store.Finish(ctx, *j, nil, err)
 	}
+	var next []store.Followup
 	for _, a := range artifacts {
 		key := "artifact:" + artifactIdentity(a) + ":" + w.Rules.Hash
-		if err = w.Store.Enqueue(ctx, "static-artifact", key, ArtifactJob{rel, a}, j.Priority); err != nil {
-			return true, w.Store.Finish(ctx, *j, nil, err)
-		}
+		next = append(next, store.Followup{Kind: "static-artifact", Key: key, Payload: ArtifactJob{rel, a}, Priority: j.Priority})
 	}
-	return true, w.Store.Finish(ctx, *j, map[string]any{"status": "resolved", "artifacts": len(artifacts)}, nil)
+	return true, w.Store.CompleteStatic(ctx, *j, map[string]any{"status": "resolved", "artifacts": len(artifacts)}, nil, next)
 }
 func (w *Worker) inspectArtifact(ctx context.Context, j store.Job) error {
 	var job ArtifactJob
@@ -135,20 +134,19 @@ func (w *Worker) inspectArtifact(ctx context.Context, j store.Job) error {
 		}
 	}
 	result := Result{Status: "analyzed", Artifact: a, Evidence: evidence, RulesHash: w.Rules.Hash, Limitations: []string{"Static analysis does not prove safety", "Platform-specific artifacts may contain different behavior"}}
+	var candidate *model.Record
+	var next []store.Followup
 	if len(evidence) > 0 {
 		if err = w.savePrivate(a, res.Body, result); err != nil {
 			return w.Store.Finish(ctx, j, nil, err)
 		}
-		if err = w.candidate(ctx, a, evidence, w.Rules.Hash); err != nil {
-			return w.Store.Finish(ctx, j, nil, err)
-		}
+		r := candidateRecord(a, evidence, w.Rules.Hash)
+		candidate = &r
 		if w.Config.RuntimeEnabled {
-			if err = w.Store.Enqueue(ctx, "runtime", "runtime:"+artifactIdentity(a), a, j.Priority+100); err != nil {
-				return w.Store.Finish(ctx, j, nil, err)
-			}
+			next = append(next, store.Followup{Kind: "runtime", Key: "runtime:" + artifactIdentity(a), Payload: a, Priority: j.Priority + 100})
 		}
 	}
-	return w.Store.Finish(ctx, j, result, nil)
+	return w.Store.CompleteStatic(ctx, j, result, candidate, next)
 }
 func artifactIdentity(a Artifact) string {
 	return model.Hash([]byte(a.Package.Ecosystem + ":" + a.Package.Registry + ":" + a.Package.Name + ":" + a.Package.Version + ":" + a.URL + ":" + a.SHA256 + ":" + a.SHA512))
@@ -168,11 +166,10 @@ func (w *Worker) savePrivate(a Artifact, b []byte, result Result) error {
 	}
 	return os.WriteFile(filepath.Join(dir, a.SHA256+".analysis.json"), data, 0600)
 }
-func (w *Worker) candidate(ctx context.Context, a Artifact, ev []model.Evidence, revision string) error {
+func candidateRecord(a Artifact, ev []model.Evidence, revision string) model.Record {
 	now := time.Now().UTC()
 	id := "artifact:" + artifactIdentity(a)
-	r := model.Record{SchemaVersion: model.Schema, ID: model.StableID("zoli", id), Classification: "suspicious", Summary: "Package artifact requires review", Affected: []model.Affected{{Package: a.Package, Versions: []string{a.Package.Version}, Scope: "versions"}}, Evidence: ev, Sources: []model.Provenance{{Source: "zoli", ID: id, URL: a.URL, License: "CC-BY-4.0", Revision: revision, RetrievedAt: now}}, OriginalLicense: "CC-BY-4.0"}
-	return w.Store.Ingest(ctx, r, false)
+	return model.Record{SchemaVersion: model.Schema, ID: model.StableID("zoli", id), Classification: "suspicious", Summary: "Package artifact requires review", Affected: []model.Affected{{Package: a.Package, Versions: []string{a.Package.Version}, Scope: "versions"}}, Evidence: ev, Sources: []model.Provenance{{Source: "zoli", ID: id, URL: a.URL, License: "CC-BY-4.0", Revision: revision, RetrievedAt: now}}, OriginalLicense: "CC-BY-4.0"}
 }
 func (w *Worker) Resolve(ctx context.Context, r discovery.Release) ([]Artifact, error) {
 	q := r.Package

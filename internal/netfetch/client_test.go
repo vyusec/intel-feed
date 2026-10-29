@@ -1,9 +1,30 @@
 package netfetch
 
 import (
+	"context"
+	"io"
 	"net"
+	"net/http"
+	"strings"
 	"testing"
 )
+
+type rateLimitHTTP func(*http.Request) (*http.Response, error)
+
+func (f rateLimitHTTP) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestGitHubRateLimitIsActionableAndDoesNotRetryImmediately(t *testing.T) {
+	calls := 0
+	c := New([]string{"api.github.com"}, "")
+	c.HTTP.Transport = rateLimitHTTP(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 403, Header: http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {"1792679154"}}, Body: io.NopCloser(strings.NewReader("rate limited"))}, nil
+	})
+	_, err := c.Get(context.Background(), "https://api.github.com/advisories", 1024, "")
+	if err == nil || !strings.Contains(err.Error(), "GitHub API token") || !strings.Contains(err.Error(), "2026-") || calls != 1 {
+		t.Fatal(calls, err)
+	}
+}
 
 func TestDestinationPolicy(t *testing.T) {
 	c := New([]string{"pypi.org"}, "")

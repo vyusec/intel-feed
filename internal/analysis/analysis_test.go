@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"os"
 	"strings"
 	"testing"
@@ -74,5 +75,54 @@ func TestArchiveRegularFiles(t *testing.T) {
 func TestPinnedSandboxImages(t *testing.T) {
 	if pinnedImage("node:latest") || !pinnedImage("sha256:"+strings.Repeat("a", 64)) {
 		t.Fatal("image pin policy")
+	}
+}
+
+func TestArchiveRejectsCorruptTrailersHiddenPayloadsAndEmptyZip(t *testing.T) {
+	var tarBytes bytes.Buffer
+	tw := tar.NewWriter(&tarBytes)
+	if err := tw.WriteHeader(&tar.Header{Name: "package/index.js", Mode: 0600, Size: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var compressed bytes.Buffer
+	gw := gzip.NewWriter(&compressed)
+	if _, err := gw.Write(tarBytes.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inspect(compressed.Bytes(), config.Default().Analysis); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := append([]byte(nil), compressed.Bytes()...)
+	corrupt[len(corrupt)-8] ^= 1
+	var empty bytes.Buffer
+	zw := zip.NewWriter(&empty)
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range map[string][]byte{
+		"gzip CRC":               corrupt,
+		"gzip truncated trailer": compressed.Bytes()[:compressed.Len()-5],
+		"appended tar":           append(append([]byte(nil), tarBytes.Bytes()...), tarBytes.Bytes()...),
+		"empty zip":              empty.Bytes(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Inspect(b, config.Default().Analysis); err == nil {
+				t.Fatal("accepted incomplete or hidden content")
+			}
+		})
+	}
+	for _, name := range []string{"..", "package/a\n.js", "package/a\x00.js"} {
+		if safeName(name) {
+			t.Fatalf("accepted path %q", name)
+		}
 	}
 }

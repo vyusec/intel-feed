@@ -14,7 +14,19 @@ An open source package threat intelligence pipeline for Zoli. It imports attribu
 
 PyPI supports pip, Poetry and Pipenv identities; npm supports npm/pnpm identities. Cargo and Maven initially receive published reports. Conda supports reviewed reports with channel, subdirectory and build selectors; its version ranges are retained as uncertain rather than evaluated.
 
+## Progress and readiness
+
+Implementation is ahead of deployment validation. PostgreSQL lifecycle tests, a complete live source backfill, and a client update from a deployed HTTPS feed are still readiness gates.
+
+- [Progress and remaining blockers](docs/progress.md)
+- [Phased roadmap and today's work](docs/roadmap.md)
+- [Validation evidence and reproduction](docs/validation.md)
+
+The 22 October repair adds explicit coverage skips for unsupported historical report identities, incremental package-less withdrawals and independent source refreshes. The [continuous deployment](docs/operations.md#continuous-threat-and-release-updates) refreshes reports every 15 minutes and polls npm/PyPI releases every minute, with a static worker and protected-package recovery polls. A five-minute client timer is also provided. The 30 October foundation pass closes local PostgreSQL acceptance and adds atomic static-worker completion, archive and freshness checks; healthy live rollout remains open. See the [foundation gates](docs/foundations.md) and dated progress record.
+
 ## Start locally
+
+For a Docker-based homelab deployment, follow the [homelab setup and restart guide](docs/homelab.md).
 
 Requirements: Go 1.26+, PostgreSQL, or Docker Compose. Network access is needed for dependency downloads and live ingestion.
 
@@ -81,12 +93,15 @@ The Go client in [pkg/client](pkg/client) verifies signatures, compressed artifa
 
 Read [the feed format](docs/feed-format.md) and [OpenAPI specification](api/openapi.yaml) for integration details.
 
+The [client-check example](examples/client-check/main.go) compares verified local lookup with a deployed HTTPS service and checks cache save/reload. Follow [the validation runbook](docs/validation.md) for isolated report-only and synthetic review exercises.
+
 ## Reproduce and evaluate
 
 ```sh
 ./bin/zoli-intel analyze --artifact package.tgz --ecosystem npm \
   --rules rules/rules.yaml
 ./bin/zoli-intel evaluate --corpus testdata/evaluation/corpus.json
+go run -buildvcs=false ./examples/source-check /path/to/npm-all.zip /path/to/github-advisories.json
 make test vet
 ```
 

@@ -1,0 +1,12 @@
+# Development fixtures only. Do not point this at the live report database/feed.
+listen: 127.0.0.1:18081
+database_env: ZOLI_SYNTHETIC_DATABASE_URL
+storage_dir: data/readiness/synthetic/private
+feed_dir: data/readiness/synthetic/feed
+signing_key: data/readiness/synthetic/feed.key
+ingest_interval: 24h
+publish_interval: 24h
+sources: []
+analysis:
+  enabled: false
+  runtime_enabled: false

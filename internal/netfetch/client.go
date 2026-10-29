@@ -112,6 +112,14 @@ func (c *Client) Get(ctx context.Context, raw string, max int64, etag string) (R
 			res.Body.Close()
 			return out, nil
 		}
+		if req.URL.Hostname() == "api.github.com" && res.StatusCode == http.StatusForbidden && res.Header.Get("X-RateLimit-Remaining") == "0" {
+			res.Body.Close()
+			reset := "the next scheduled cycle"
+			if stamp, err := strconv.ParseInt(res.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+				reset = time.Unix(stamp, 0).UTC().Format(time.RFC3339)
+			}
+			return out, fmt.Errorf("upstream api.github.com HTTP 403: API rate limit exhausted; configure a GitHub API token or retry after %s", reset)
+		}
 		if res.StatusCode == 429 || res.StatusCode >= 500 {
 			res.Body.Close()
 			wait := time.Duration(attempt+1) * time.Second

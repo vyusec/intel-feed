@@ -234,16 +234,12 @@ type Publisher struct {
 
 func (p *Publisher) Publish(ctx context.Context) error {
 	return p.Store.Lock(ctx, "publish", func() error {
-		records, err := p.Store.Records(ctx, true)
+		records, sources, err := p.Store.PublicationInputs(ctx)
 		if err != nil {
 			return err
 		}
 		records = Deduplicate(records)
 		oldSeq, previousManifest, old, err := p.Store.Publication(ctx)
-		if err != nil {
-			return err
-		}
-		sources, err := p.Store.Sources(ctx)
 		if err != nil {
 			return err
 		}

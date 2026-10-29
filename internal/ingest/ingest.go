@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -19,11 +20,20 @@ import (
 	"zoli.dev/intel-feed/internal/config"
 	"zoli.dev/intel-feed/internal/model"
 	"zoli.dev/intel-feed/internal/netfetch"
-	"zoli.dev/intel-feed/internal/store"
 )
 
+type reportStore interface {
+	Lock(context.Context, string, func() error) error
+	Source(context.Context, string) (model.SourceState, error)
+	SaveSource(context.Context, model.SourceState) error
+	Ingest(context.Context, model.Record, bool) error
+	Get(context.Context, string) (model.Record, error)
+	Records(context.Context, bool) ([]model.Record, error)
+	Event(context.Context, string, string) error
+}
+
 type Pipeline struct {
-	Store   *store.Store
+	Store   reportStore
 	Client  *netfetch.Client
 	Dir     string
 	Sources []config.Source
@@ -47,13 +57,17 @@ func (p *Pipeline) RunSource(ctx context.Context, s config.Source, reconcile boo
 		now := time.Now().UTC()
 		st.LastAttempt = &now
 		st.Coverage = "published_malware_reports"
+		if err = p.Store.SaveSource(ctx, st); err != nil {
+			return err
+		}
 		original := st.Cursor
+		gaps := append([]string(nil), st.Gaps...)
 		var cursor string
 		switch s.Type {
 		case "github":
-			cursor, err = p.github(ctx, s, st.Cursor, reconcile)
+			cursor, err = p.github(ctx, s, st.Cursor, reconcile, &gaps)
 		case "osv":
-			cursor, err = p.osv(ctx, s, st.Cursor, reconcile)
+			cursor, err = p.osv(ctx, s, st.Cursor, reconcile, &gaps)
 		default:
 			err = errors.New("unsupported source")
 		}
@@ -62,14 +76,16 @@ func (p *Pipeline) RunSource(ctx context.Context, s config.Source, reconcile boo
 			st.Error = err.Error()
 		} else {
 			st.Cursor = cursor
-			st.LastSuccess = &now
+			completed := time.Now().UTC()
+			st.LastSuccess = &completed
 			st.Error = ""
 		}
+		st.Gaps = gaps
 		saveErr := p.Store.SaveSource(ctx, st)
 		return errors.Join(err, saveErr)
 	})
 }
-func (p *Pipeline) save(ctx context.Context, s config.Source, b []byte) error {
+func (p *Pipeline) save(ctx context.Context, s config.Source, b []byte, gaps *[]string) error {
 	var r model.Record
 	var auto bool
 	var err error
@@ -79,6 +95,17 @@ func (p *Pipeline) save(ctx context.Context, s config.Source, b []byte) error {
 		r, auto, err = ParseOSV(b, s)
 	}
 	if err != nil {
+		var unsupported *unsupportedReport
+		if errors.As(err, &unsupported) {
+			if err = p.raw(b); err != nil {
+				return err
+			}
+			if err = p.Store.Event(ctx, "ingest_skip", s.Name+": "+unsupported.Error()); err != nil {
+				return err
+			}
+			*gaps = appendSourceGap(*gaps, unsupported.Error())
+			return nil
+		}
 		return err
 	}
 	if r.ID == "" {
@@ -87,7 +114,31 @@ func (p *Pipeline) save(ctx context.Context, s config.Source, b []byte) error {
 	if err = p.raw(b); err != nil {
 		return err
 	}
+	// Withdrawn upstream records may omit package data. Retain the old identity
+	// only to retract its prior assertion; never invent a new affected scope.
+	if r.WithdrawnAt != nil && len(r.Affected) == 0 {
+		old, err := p.Store.Get(ctx, r.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		r.Affected = old.Affected
+	}
 	return p.Store.Ingest(ctx, r, auto)
+}
+
+func appendSourceGap(gaps []string, detail string) []string {
+	for _, gap := range gaps {
+		if gap == detail {
+			return gaps
+		}
+	}
+	if len(gaps) >= 20 {
+		gaps = gaps[len(gaps)-19:]
+	}
+	return append(gaps, detail)
 }
 func (p *Pipeline) raw(b []byte) error {
 	path := filepath.Join(p.Dir, "raw", model.Hash(b)+".json")
@@ -107,10 +158,10 @@ func (p *Pipeline) raw(b []byte) error {
 	}
 	return f.Sync()
 }
-func (p *Pipeline) github(ctx context.Context, s config.Source, cursor string, reconcile bool) (string, error) {
+func (p *Pipeline) github(ctx context.Context, s config.Source, cursor string, reconcile bool, gaps *[]string) (string, error) {
 	high := cursor
 	for _, withdrawn := range []bool{false, true} {
-		next, err := p.githubPass(ctx, s, cursor, reconcile, withdrawn)
+		next, err := p.githubPass(ctx, s, cursor, reconcile, withdrawn, gaps)
 		if err != nil {
 			return cursor, err
 		}
@@ -127,7 +178,7 @@ func (p *Pipeline) github(ctx context.Context, s config.Source, cursor string, r
 	}
 	return high, nil
 }
-func (p *Pipeline) githubPass(ctx context.Context, s config.Source, cursor string, reconcile bool, withdrawn bool) (string, error) {
+func (p *Pipeline) githubPass(ctx context.Context, s config.Source, cursor string, reconcile bool, withdrawn bool, gaps *[]string) (string, error) {
 	u, err := url.Parse(s.URL)
 	if err != nil {
 		return cursor, err
@@ -137,7 +188,7 @@ func (p *Pipeline) githubPass(ctx context.Context, s config.Source, cursor strin
 	q.Set("is_withdrawn", fmt.Sprint(withdrawn))
 	q.Set("per_page", "100")
 	q.Set("sort", "updated")
-	q.Set("direction", "asc")
+	q.Set("direction", "desc")
 	if cursor != "" && !reconcile {
 		t, err := time.Parse(time.RFC3339Nano, cursor)
 		if err != nil {
@@ -165,13 +216,13 @@ func (p *Pipeline) githubPass(ctx context.Context, s config.Source, cursor strin
 			if err = json.Unmarshal(b, &a); err != nil {
 				return cursor, err
 			}
-			if err = p.save(ctx, s, b); err != nil {
-				return cursor, err
-			}
-			ts := a.Updated.UTC().Format(time.RFC3339Nano)
 			if a.Updated.IsZero() {
 				return cursor, errors.New("advisory lacks updated timestamp")
 			}
+			if err = p.save(ctx, s, b, gaps); err != nil {
+				return cursor, fmt.Errorf("%s: %w", a.ID, err)
+			}
+			ts := a.Updated.UTC().Format(time.RFC3339Nano)
 			previous, _ := time.Parse(time.RFC3339Nano, high)
 			if high == "" || a.Updated.After(previous) {
 				high = ts
@@ -191,7 +242,7 @@ func (p *Pipeline) githubPass(ctx context.Context, s config.Source, cursor strin
 	}
 	return high, nil
 }
-func (p *Pipeline) osv(ctx context.Context, s config.Source, cursor string, reconcile bool) (string, error) {
+func (p *Pipeline) osv(ctx context.Context, s config.Source, cursor string, reconcile bool, gaps *[]string) (string, error) {
 	var since time.Time
 	var err error
 	if cursor != "" {
@@ -203,10 +254,16 @@ func (p *Pipeline) osv(ctx context.Context, s config.Source, cursor string, reco
 	}
 	start := time.Now().UTC()
 	seen := map[string]bool{}
-	for _, ecosystem := range s.Ecosystems {
+	// OSV moves package-less withdrawals into [EMPTY]. Poll that export as well
+	// so they retract old identities during incremental updates, not a day later.
+	ecosystems := append([]string(nil), s.Ecosystems...)
+	if len(ecosystems) > 0 {
+		ecosystems = append(ecosystems, "[EMPTY]")
+	}
+	for _, ecosystem := range ecosystems {
 		base := strings.TrimRight(s.URL, "/") + "/" + url.PathEscape(ecosystem)
 		if cursor == "" || reconcile {
-			if err = p.bulk(ctx, s, base+"/all.zip", seen); err != nil {
+			if err = p.bulk(ctx, s, base+"/all.zip", seen, gaps); err != nil {
 				return cursor, err
 			}
 			continue
@@ -243,7 +300,10 @@ func (p *Pipeline) osv(ctx context.Context, s config.Source, cursor string, reco
 				return cursor, err
 			}
 			if reconcile || !t.Before(since) {
-				ids = append(ids, id)
+				if !seen[id] {
+					ids = append(ids, id)
+					seen[id] = true
+				}
 			}
 		}
 		sort.Strings(ids)
@@ -252,8 +312,8 @@ func (p *Pipeline) osv(ctx context.Context, s config.Source, cursor string, reco
 			if err != nil {
 				return cursor, err
 			}
-			if err = p.save(ctx, s, res.Body); err != nil {
-				return cursor, err
+			if err = p.save(ctx, s, res.Body, gaps); err != nil {
+				return cursor, fmt.Errorf("%s: %w", id, err)
 			}
 		}
 	}
@@ -264,7 +324,7 @@ func (p *Pipeline) osv(ctx context.Context, s config.Source, cursor string, reco
 	}
 	return start.Format(time.RFC3339Nano), nil
 }
-func (p *Pipeline) bulk(ctx context.Context, s config.Source, rawURL string, seen map[string]bool) error {
+func (p *Pipeline) bulk(ctx context.Context, s config.Source, rawURL string, seen map[string]bool, gaps *[]string) error {
 	res, err := p.Client.Get(ctx, rawURL, 512<<20, "")
 	if err != nil {
 		return err
@@ -292,7 +352,7 @@ func (p *Pipeline) bulk(ctx context.Context, s config.Source, rawURL string, see
 		if len(b) > 2<<20 {
 			return errors.New("OSV record exceeds size limit")
 		}
-		if err = p.save(ctx, s, b); err != nil {
+		if err = p.save(ctx, s, b, gaps); err != nil {
 			return fmt.Errorf("%s: %w", f.Name, err)
 		}
 		var report OSV

@@ -235,6 +235,42 @@ func TestPrivateReplacementNeverLeaksThroughWithdrawal(t *testing.T) {
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSourceSkipsUnsupportedIdentityAndAppliesEmptyWithdrawal(t *testing.T) {
+	s := isolated(t)
+	ctx := context.Background()
+	source := config.Source{Name: "github-live-regression", Type: "github", URL: "https://api.github.com/advisories", License: "CC-BY-4.0", Trusted: true}
+	withdraw := false
+	client := &netfetch.Client{Hosts: map[string]bool{"api.github.com": true}, HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		body := "[]"
+		if !withdraw && r.URL.Query().Get("is_withdrawn") == "false" {
+			body = `[{"ghsa_id":"GHSA-supported","type":"malware","summary":"Malicious package","updated_at":"2026-10-22T00:00:00Z","vulnerabilities":[{"package":{"ecosystem":"npm","name":"supported-package"},"vulnerable_version_range":"=1.0.0"}]},{"ghsa_id":"GHSA-qqfx-rpxc-ghp4","type":"malware","updated_at":"2026-10-22T00:00:00Z","vulnerabilities":[{"package":{"ecosystem":"npm","name":"--hiljson"}}]}]`
+		} else if withdraw && r.URL.Query().Get("is_withdrawn") == "true" {
+			body = `[{"ghsa_id":"GHSA-supported","type":"malware","updated_at":"2026-10-22T01:00:00Z","withdrawn_at":"2026-10-22T01:00:00Z"}]`
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}}
+	p := ingest.Pipeline{Store: s, Client: client, Dir: t.TempDir()}
+	if err := p.RunSource(ctx, source, false); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.Source(ctx, source.Name)
+	if err != nil || st.LastSuccess == nil || st.Error != "" || len(st.Gaps) != 1 {
+		t.Fatal(st, err)
+	}
+	public, err := s.Records(ctx, true)
+	if err != nil || len(public) != 1 || public[0].Status != "published" {
+		t.Fatal(public, err)
+	}
+	withdraw = true
+	if err := p.RunSource(ctx, source, false); err != nil {
+		t.Fatal(err)
+	}
+	public, err = s.Records(ctx, true)
+	if err != nil || len(public) != 1 || public[0].Status != "withdrawn" || public[0].Affected[0].Package.Name != "supported-package" {
+		t.Fatal(public, err)
+	}
+}
 func TestSourceCursorDoesNotAdvanceAfterPartialFailure(t *testing.T) {
 	s := isolated(t)
 	ctx := context.Background()
@@ -268,5 +304,47 @@ func TestSourceCursorDoesNotAdvanceAfterPartialFailure(t *testing.T) {
 	records, err := s.Records(ctx, false)
 	if err != nil || len(records) != 1 {
 		t.Fatal("completed page not persisted", records, err)
+	}
+}
+
+func TestConcurrentSourcesDoNotAutoPublishConflictingAliasScopes(t *testing.T) {
+	s := isolated(t)
+	ctx := context.Background()
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		r := sample()
+		r.ID = fmt.Sprintf("ZOLI-concurrent-%d", i)
+		r.Aliases = []string{"MAL-shared-alias"}
+		r.Sources[0].Source = fmt.Sprintf("source-%d", i)
+		r.Sources[0].ID = fmt.Sprintf("report-%d", i)
+		r.Affected[0].Versions = []string{fmt.Sprintf("%d.0.0", i+1)}
+		go func() {
+			<-start
+			results <- s.Ingest(ctx, r, true)
+		}()
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	public, err := s.Records(ctx, true)
+	if err != nil || len(public) != 1 {
+		t.Fatal("conflicting claims both published", public, err)
+	}
+	all, err := s.Records(ctx, false)
+	if err != nil || len(all) != 2 {
+		t.Fatal(all, err)
+	}
+	pending := 0
+	for _, r := range all {
+		if r.Status == "pending" {
+			pending++
+		}
+	}
+	if pending != 1 {
+		t.Fatal("conflicting report must require review", all)
 	}
 }

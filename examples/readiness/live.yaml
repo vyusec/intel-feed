@@ -1,0 +1,23 @@
+# Development validation only. Keep synthetic reports in synthetic.yaml's database.
+listen: 127.0.0.1:18080
+database_env: ZOLI_READINESS_DATABASE_URL
+storage_dir: data/readiness/live/private
+feed_dir: data/readiness/live/feed
+signing_key: data/readiness/live/feed.key
+ingest_interval: 30m
+publish_interval: 5m
+sources:
+  - name: openssf-via-osv
+    type: osv
+    url: https://storage.googleapis.com/osv-vulnerabilities
+    license: Apache-2.0
+    trusted: true
+    ecosystems: [PyPI, npm, crates.io, Maven]
+  - name: github-malware
+    type: github
+    url: https://api.github.com/advisories
+    license: CC-BY-4.0
+    trusted: true
+analysis:
+  enabled: false
+  runtime_enabled: false

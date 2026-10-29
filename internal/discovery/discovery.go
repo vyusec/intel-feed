@@ -11,12 +11,21 @@ import (
 	"github.com/ossf/package-feeds/pkg/feeds/pypi"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 	"zoli.dev/intel-feed/internal/model"
 	"zoli.dev/intel-feed/internal/netfetch"
-	"zoli.dev/intel-feed/internal/store"
 )
+
+type releaseStore interface {
+	Lock(context.Context, string, func() error) error
+	Source(context.Context, string) (model.SourceState, error)
+	SaveSource(context.Context, model.SourceState) error
+	Event(context.Context, string, string) error
+	Enqueue(context.Context, string, string, any, int) error
+}
 
 type Release struct {
 	Package     model.Identity `json:"package"`
@@ -25,12 +34,12 @@ type Release struct {
 	Signals     []string       `json:"signals,omitempty"`
 }
 type Discovery struct {
-	Store     *store.Store
+	Store     releaseStore
 	Feeds     []feeds.ScheduledFeed
 	Watchlist map[string][]string
 	Protected map[string][]string
 }
-type gapSink struct{ Store *store.Store }
+type gapSink struct{ Store releaseStore }
 
 func (s gapSink) AddEvent(e events.Event) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -95,7 +104,15 @@ func (b *boundedBody) Read(p []byte) (int, error) {
 	b.remaining -= int64(n)
 	return n, err
 }
-func New(s *store.Store, watch, protected map[string][]string) (*Discovery, error) {
+func New(s releaseStore, watch, protected map[string][]string) (*Discovery, error) {
+	watch, err := packageLists(watch, protected)
+	if err != nil {
+		return nil, err
+	}
+	protected, err = packageLists(protected)
+	if err != nil {
+		return nil, err
+	}
 	c := netfetch.New([]string{"registry.npmjs.org", "pypi.org"}, "")
 	c.HTTP.Transport = boundedTransport{c.HTTP.Transport, 16 << 20}
 	c.HTTP.Timeout = 45 * time.Second
@@ -136,13 +153,72 @@ func New(s *store.Store, watch, protected map[string][]string) (*Discovery, erro
 	return &Discovery{s, out, watch, protected}, nil
 }
 
+// Protected packages are individually polled too, so their releases can be
+// recovered when they have already fallen out of the rolling registry feed.
+func packageLists(lists ...map[string][]string) (map[string][]string, error) {
+	sets := map[string]map[string]bool{}
+	for _, list := range lists {
+		for ecosystem, names := range list {
+			for _, name := range names {
+				id := model.Identity{Ecosystem: ecosystem, Name: name}
+				if err := id.Normalize(); err != nil {
+					return nil, fmt.Errorf("watchlist/protected package %s/%s: %w", ecosystem, name, err)
+				}
+				key := strings.ToLower(id.Ecosystem)
+				if sets[key] == nil {
+					sets[key] = map[string]bool{}
+				}
+				sets[key][id.Name] = true
+			}
+		}
+	}
+	out := map[string][]string{}
+	for ecosystem, names := range sets {
+		for name := range names {
+			out[ecosystem] = append(out[ecosystem], name)
+		}
+		sort.Strings(out[ecosystem])
+	}
+	return out, nil
+}
+
+// Publication must expose an uninitialized registry source before its first
+// successful poll, rather than temporarily claiming current analysis coverage.
+func (d *Discovery) Initialize(ctx context.Context) error {
+	for _, f := range d.Feeds {
+		name := "registry:" + f.GetName()
+		st, err := d.Store.Source(ctx, name)
+		if err != nil {
+			return err
+		}
+		if st.Coverage == "" {
+			st.Coverage = "rolling_release_feed_with_selective_analysis"
+			if err = d.Store.SaveSource(ctx, st); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 type watchFeed struct{ feeds.ScheduledFeed }
 
 func (f watchFeed) GetName() string { return f.ScheduledFeed.GetName() + ":watchlist" }
 func (d *Discovery) Run(ctx context.Context) error {
-	var errs []error
+	results := make(chan error, len(d.Feeds))
+	var wg sync.WaitGroup
 	for _, f := range d.Feeds {
-		if err := d.poll(ctx, f); err != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- d.poll(ctx, f)
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var errs []error
+	for err := range results {
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -180,6 +256,10 @@ func (d *Discovery) poll(ctx context.Context, f feeds.ScheduledFeed) error {
 				return err
 			}
 			id := model.Identity{Ecosystem: pkg.Type, Name: pkg.Name, Version: pkg.Version}
+			if id.Version == "" || pkg.CreatedDate.IsZero() {
+				actual = append(actual, fmt.Errorf("release lacks exact version or publication time: %s/%s", id.Ecosystem, id.Name))
+				continue
+			}
 			if err = id.Normalize(); err != nil {
 				actual = append(actual, err)
 				continue
@@ -211,7 +291,8 @@ func (d *Discovery) poll(ctx context.Context, f feeds.ScheduledFeed) error {
 				next = cutoff
 			}
 			st.Cursor = next.Format(time.RFC3339Nano)
-			st.LastSuccess = &now
+			completed := time.Now().UTC()
+			st.LastSuccess = &completed
 			st.Error = ""
 		}
 		// A sink may have recorded a loss event during Latest; don't overwrite it.

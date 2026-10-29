@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Zoli intelligence every five minutes
+
+[Timer]
+OnCalendar=*-*-* *:0/5:00
+RandomizedDelaySec=20s
+Persistent=true
+Unit=zoli-feed-update.service
+
+[Install]
+WantedBy=timers.target
